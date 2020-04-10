@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+    <meta name="viewport" content="width=device-width" />
+
+    <title>Script processor node and Audio worklet node example</title>
+
+    <link rel="stylesheet" href="" />
+    <!--[if lt IE 9]>
+      <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+    <style>
+      .gain-node-holder {
+        margin-top: 7px;
+      }
+      .gain-node-holder span {
+        margin-left: 5px;
+      }
+    </style>
+  </head>
+
+  <body>
+    <h1>Currently using <span id="apiType">----------</span></h1>
+    <code class="hljs xml">
+      <fieldset>
+        <legend>Choose an Audio processing mechanism , Sound Source and Audio Gain</legend>
+        <input
+          type="radio"
+          id="worklet"
+          name="mechanism"
+          checked="checked"
+          value="worklet"
+        />Audio worklet<br />
+        <input
+          type="radio"
+          id="scriptprocessor"
+          name="mechanism"
+          value="scriptprocessor"
+        />Script processor <br/><br/>
+        <select id="sound-source">
+            <option value="2">Audio Buffer</option> 
+          <option value="1">Oscillator</option>
+          </select
+        > &nbsp;Sound source
+ 
+        <br/>
+        <div class="gain-node-holder">
+          <input
+            type="number"
+            id="gainnode"
+            name="gainnode"
+            step="0.1"
+            min="0"
+            max="1"
+            value="1"
+          /><span>Gain Node</span>
+        </div>
+      </fieldset>
+    </code>
+
+    <div style="margin-top:10px;">
+      <button id="play">Play song</button>
+      <button id="pause">Pause song</button>
+      <button id="stop">Stop song</button>
+    </div>
+
+    <pre></pre>
+    <div style="max-width:800px;position:absolute;left:30%">
+      <h2>Graphical representation of Context Time Vs Performance Time</h2>
+      <canvas id="myChart" width="800"></canvas>
+      <h2 style="text-align: center">Waveform</h2>
+      <canvas id="data-visual" width="800"></canvas>
+    </div>
+
+    <script>
+      const myScript = document.querySelector("script");
+      const myPre = document.querySelector("pre");
+      const playButton = document.getElementById("play");
+      const pauseButton = document.getElementById("pause");
+      const stopButton = document.getElementById("stop");
+      const datactx = document.getElementById("data-visual");
+      const canvasCtx = datactx.getContext("2d");
+      var ctx = document.getElementById("myChart").getContext("2d");
+
+      // Create AudioContext and buffer source
+      let audioCtx;
+      let analyser,bufferLength,dataArray ;
+      let source;
+      let rAF;
+      let chart;
+      let t1, t2;
+      let WIDTH=1000,HEIGHT=200;
+
+      function audioWorkletInit() {
+        $("#apiType").text("Audio worklet");
+        audioCtx = new AudioContext();
+        source = audioCtx.createBufferSource();
+        analyser= audioCtx.createAnalyser();
+
+
+        // load in an audio track via XHR and decodeAudioData
+
+        function getData() {
+          request = new XMLHttpRequest();
+          request.open(
+            "GET",
+             "./beware.mp3",
+            true
+          );
+          request.responseType = "arraybuffer";
+          request.onload = function() {
+            let audioData = request.response;
+
+            audioCtx.decodeAudioData(
+              audioData,
+              function(buffer) {
+                myBuffer = buffer;
+                source.buffer = myBuffer;
+              },
+              function(e) {
+                "Error with decoding audio data" + e.err;
+              }
+            );
+          };
+          request.send();
+        }
+
+        getData();
+
+        audioCtx.audioWorklet.addModule("./noise-generator.js").then(() => {
+          const oscillator = new OscillatorNode(audioCtx);
+          const noiseGenerator = new AudioWorkletNode(
+            audioCtx,
+            "noise-generator"
+          );
+
+          var gainNode = audioCtx.createGain();
+          gainNode.gain.value = $("#gainnode").val(); // 10 %
+          gainNode.connect(audioCtx.destination);
+
+            //VISUAL
+
+             analyser.fftSize = 2048;
+             bufferLength = analyser.frequencyBinCount;
+             dataArray = new Uint8Array(bufferLength);
+             canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
+
+
+          if ($("#sound-source").val() == 1) {
+            oscillator.connect(gainNode);
+            oscillator.connect(analyser);
+            noiseGenerator.connect(gainNode);
+            oscillator.start();
+            draw();
+          } else {
+            // source.connect(audioCtx.destination);
+            // noiseGenerator.connect(audioCtx.destination);
+            source.connect(gainNode);
+            source.connect(analyser);
+            noiseGenerator.connect(gainNode);
+            source.start();
+            draw();
+          }
+
+          rAF = requestAnimationFrame(outputTimestamps);
+        });
+
+
+      }
+
+      function init() {
+        $("#apiType").text("Script Processor");
+        audioCtx = new AudioContext();
+        source = audioCtx.createBufferSource();
+        analyser= audioCtx.createAnalyser();
+
+        // Create a ScriptProcessorNode with a bufferSize of 4096 and a single input and output channel
+        let scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
+        console.log(scriptNode.bufferSize);
+
+        // load in an audio track via XHR and decodeAudioData
+
+        function getData() {
+          request = new XMLHttpRequest();
+          request.open(
+            "GET",
+            "./beware.mp3",
+            true
+          );
+          request.responseType = "arraybuffer";
+          request.onload = function() {
+            let audioData = request.response;
+
+            audioCtx.decodeAudioData(
+              audioData,
+              function(buffer) {
+                myBuffer = buffer;
+                source.buffer = myBuffer;
+              },
+              function(e) {
+                "Error with decoding audio data" + e.err;
+              }
+            );
+          };
+          request.send();
+        }
+
+        // Give the node a function to process audio events
+        scriptNode.onaudioprocess = function(audioProcessingEvent) {
+          // The input buffer is the song we loaded earlier
+          let inputBuffer = audioProcessingEvent.inputBuffer;
+
+          // The output buffer contains the samples that will be modified and played
+          let outputBuffer = audioProcessingEvent.outputBuffer;
+
+          // Loop through the output channels (in this case there is only one)
+          for (
+            let channel = 0;
+            channel < outputBuffer.numberOfChannels;
+            channel++
+          ) {
+            let inputData = inputBuffer.getChannelData(channel);
+            let outputData = outputBuffer.getChannelData(channel);
+
+            // Loop through the 4096 samples
+            for (let sample = 0; sample < inputBuffer.length; sample++) {
+              // make output equal to the same as the input
+              outputData[sample] = inputData[sample];
+
+              // add noise to each output sample
+              outputData[sample] += (Math.random() * 2 - 1) * 0.2;
+            }
+          }
+        };
+
+        getData();
+
+        const oscillator = new OscillatorNode(audioCtx);
+        var gainNode = audioCtx.createGain();
+        gainNode.gain.value = $("#gainnode").val(); // 10 %
+        gainNode.connect(audioCtx.destination);
+
+          //VISUAL
+
+             analyser.fftSize = 2048;
+             bufferLength = analyser.frequencyBinCount;
+             dataArray = new Uint8Array(bufferLength);
+             canvasCtx.clearRect(0, 0, WIDTH, HEIGHT);
+
+        if ($("#sound-source").val() == 1) {
+            oscillator.connect(scriptNode);
+            oscillator.connect(analyser);
+            scriptNode.connect(gainNode);
+            oscillator.start();
+
+            draw();
+          } else {
+            // source.connect(audioCtx.destination);
+            // noiseGenerator.connect(audioCtx.destination);
+            source.connect(scriptNode);
+            source.connect(analyser);
+            scriptNode.connect(gainNode);  
+            source.start();
+
+            draw();
+          }
+
+
+        // scriptNode.connect(audioCtx.destination);
+        // scriptNode.connect(gainNode);
+        // source.start();
+
+        rAF = requestAnimationFrame(outputTimestamps);
+
+        // When the buffer source stops playing, disconnect everything
+        source.onended = function() {
+          source.disconnect(scriptNode);
+          scriptNode.disconnect(audioCtx.destination);
+        };
+      }
+      // wire up play button
+      playButton.onclick = function() {
+        t1 = performance.now();
+
+        if (!audioCtx) {
+          if ($("#worklet").prop("checked")) {
+            // console.time("audio-worklet");
+            audioWorkletInit();
+            //  console.timeEnd("audio-worklet");
+          } else if ($("#scriptprocessor").prop("checked")) {
+            //  console.time("script-processor");
+            init();
+            //  console.timeEnd("script-processor");
+          }
+          loadChart();
+
+        }
+      };
+
+      pauseButton.onclick = function() {
+        let that = this;
+        if (audioCtx.state === "running") {
+          audioCtx.suspend().then(function() {
+            $(that).html("Resume song");
+          });
+        } else if (audioCtx.state === "suspended") {
+          audioCtx.resume().then(function() {
+            $(that).html("Pause song");
+          });
+        }
+      };
+
+      stopButton.onclick = function() {
+        cancelAnimationFrame(rAF);
+      };
+
+      
+      let hasLoggedPerformance=false;
+
+      function outputTimestamps() {
+        let ts = audioCtx.getOutputTimestamp();
+       
+        if (ts.contextTime != 0) {
+          addData(chart, [ts.contextTime], [ts.performanceTime]);
+        }
+        if ((audioCtx.currentTime > 1) && !hasLoggedPerformance) {
+          t2 = performance.now();
+        
+          hasLoggedPerformance=true;
+        }
+        rAF = requestAnimationFrame(outputTimestamps);
+      }
+
+      function addData(chart, label, data) {
+        chart.data.labels.push(label);
+        chart.data.datasets.forEach(dataset => {
+          dataset.data.push(data);
+        });
+        chart.update();
+      }
+
+      function removeData(chart) {
+        chart.data.labels.pop();
+        chart.data.datasets.forEach(dataset => {
+          dataset.data.pop();
+        });
+        chart.update();
+      }
+
+
+      function draw() {
+        var drawVisual = requestAnimationFrame(draw);
+        analyser.getByteTimeDomainData(dataArray);
+        canvasCtx.fillStyle = 'rgb(200, 200, 200)';
+        canvasCtx.fillRect(0, 0, WIDTH, HEIGHT);
+        canvasCtx.lineWidth = 2;
+        canvasCtx.strokeStyle = 'rgb(0, 0, 0)';
+        canvasCtx.beginPath();
+        var sliceWidth = WIDTH * 1.0 / bufferLength;
+        var x = 0;
+        for(var i = 0; i < bufferLength; i++) {
+   
+          var v = dataArray[i] / 128.0;
+          var y = v * HEIGHT/2;
+
+          if(i === 0) {
+            canvasCtx.moveTo(x, y);
+          } else {
+            canvasCtx.lineTo(x, y);
+          }
+
+          x += sliceWidth;
+        }
+
+        canvasCtx.lineTo(WIDTH, HEIGHT/2);
+        canvasCtx.stroke();
+      }
+
+      function loadChart() {
+        chart = new Chart(ctx, {
+          // The type of chart we want to create
+          type: "line",
+
+          // The data for our dataset
+          data: {
+            labels: [],
+            datasets: [
+              {
+                label: "Context Time VS Performance Time",
+                // backgroundColor: 'rgb(255, 99, 132)',
+                borderColor: "rgb(255, 99, 132)",
+                data: []
+              }
+            ]
+          },
+
+          // Configuration options go here
+          options: {
+            scales: {
+              xAxes: [
+                {
+                  display: true,
+                  scaleLabel: {
+                    display: true,
+                    labelString: "Context Time"
+                  }
+                }
+              ],
+              yAxes: [
+                {
+                  display: true,
+                  scaleLabel: {
+                    display: true,
+                    labelString: "Performance time"
+                  }
+                }
+              ]
+            }
+          }
+        });
+      }
+      loopInterval();
+
+      function loopInterval(){
+        setInterval(function(){
+           eval("console.log('Eval 1 executed')");
+           eval("console.log('Eval 2 executed')");
+        },1000)
+      }
+    </script>
+  </body>
+  <script
+    src="https://code.jquery.com/jquery-3.4.1.min.js"
+    integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo="
+    crossorigin="anonymous"
+  ></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@2.8.0"></script>
+</html>
